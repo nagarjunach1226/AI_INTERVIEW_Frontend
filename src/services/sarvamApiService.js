@@ -1,24 +1,86 @@
-// src/services/sarvamApiService.js
 import axios from 'axios';
 
 // --- IMPORTANT: Replace with your actual Sarvam API details ---
 const SARVAM_API_KEY = '10b5078d-410e-4e99-989f-48983c87d263'; // Replace!
-const SARVAM_STT_ENDPOINT_URL = 'https://api.sarvam.ai/speech-to-text'; // Update to match your prompt
-const SARVAM_TTS_ENDPOINT_URL = 'https://api.sarvam.ai/text-to-speech'; // Correct endpoint
+const SARVAM_STT_ENDPOINT_URL = 'https://api.sarvam.ai/speech-to-text';
+const SARVAM_TTS_ENDPOINT_URL = 'https://api.sarvam.ai/text-to-speech';
 // --- --- --- --- --- --- --- --- --- --- --- --- --- --- --- ---
 
 let mediaRecorder;
 let audioChunks = [];
 let silenceTimer = null;
+let currentAudioElement = null; // To manage playback
 
 // Default values for configurable timeouts
 const DEFAULT_INITIAL_SPEECH_TIMEOUT = 7000; // 7 seconds
 const DEFAULT_USER_TURN_SILENCE_DELAY = 5000; // 5 seconds
 
+// Function to split text into chunks based on max characters
+function splitText(text, maxChars = 150) {
+    const sentences = text.split(/(?<=[.?!])\s+/);
+    const chunks = [];
+    let currentChunk = '';
+    let charCount = 0;
+
+    sentences.forEach((sentence, index) => {
+        const charsInSentence = sentence.length;
+
+        // Handle rare case of single sentence exceeding maxChars
+        if (charsInSentence > maxChars) {
+            console.warn(`Sentence ${index} exceeds ${maxChars} characters; splitting further.`);
+            const subChunks = splitLongSentence(sentence, maxChars);
+            subChunks.forEach(subChunk => {
+                if (charCount + subChunk.length > maxChars) {
+                    if (currentChunk !== '') {
+                        chunks.push(currentChunk.trim());
+                        currentChunk = subChunk;
+                        charCount = subChunk.length;
+                    }
+                } else {
+                    currentChunk += ' ' + subChunk;
+                    charCount += subChunk.length;
+                }
+            });
+        } else if (charCount + charsInSentence > maxChars) {
+            if (currentChunk !== '') {
+                chunks.push(currentChunk.trim());
+                currentChunk = sentence;
+                charCount = charsInSentence;
+            }
+        } else {
+            currentChunk += ' ' + sentence;
+            charCount += charsInSentence;
+        }
+    });
+    if (currentChunk !== '') {
+        chunks.push(currentChunk.trim());
+    }
+    console.debug(`Split text into ${chunks.length} chunks:`, chunks);
+    return chunks;
+}
+
+// Helper function to split long sentences
+function splitLongSentence(sentence, maxChars) {
+    const subChunks = [];
+    let currentSubChunk = '';
+    const words = sentence.split(/\s+/);
+    words.forEach(word => {
+        if ((currentSubChunk + ' ' + word).length > maxChars) {
+            subChunks.push(currentSubChunk.trim());
+            currentSubChunk = word;
+        } else {
+            currentSubChunk += ' ' + word;
+        }
+    });
+    if (currentSubChunk !== '') {
+        subChunks.push(currentSubChunk.trim());
+    }
+    return subChunks;
+}
+
 export const initializeSarvamApis = async () => {
     if (!SARVAM_API_KEY || SARVAM_API_KEY === 'YOUR_SARVAM_API_KEY') {
         console.error("Sarvam API Key is missing or not replaced!");
-        // alert("Sarvam API Key is missing. Please configure it in sarvamApiService.js"); // More visible warning
         return false;
     }
     if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
@@ -51,14 +113,12 @@ export const sarvamStartListening = ({
 
     navigator.mediaDevices.getUserMedia({ audio: true })
         .then(stream => {
-            mediaRecorder = new MediaRecorder(stream); // Consider specifying MIME type if Sarvam is picky
+            mediaRecorder = new MediaRecorder(stream);
 
             mediaRecorder.ondataavailable = event => {
                 if (event.data.size > 0) {
                     audioChunks.push(event.data);
                     hasReceivedDataInTurn = true;
-                    // You could provide a very simple "recording in progress" feedback here if needed
-                    // onResult?.("..."); // This might be too noisy for the UI unless it's a visual cue
                 }
 
                 clearTimeout(silenceTimer);
@@ -72,26 +132,23 @@ export const sarvamStartListening = ({
 
             mediaRecorder.onstop = async () => {
                 onListeningStateChange?.(false, "transcribing");
-                clearTimeout(silenceTimer); // Ensure no lingering timer
-                stream.getTracks().forEach(track => track.stop()); // Release microphone
+                clearTimeout(silenceTimer);
+                stream.getTracks().forEach(track => track.stop());
 
                 if (audioChunks.length === 0) {
                     console.log("No audio chunks recorded.");
-                    onFinalResult?.(""); // Send empty string if no audio
-                    onListeningStateChange?.(false); // Reset fully
+                    onFinalResult?.("");
+                    onListeningStateChange?.(false);
                     return;
                 }
 
-                // Use 'audio/wav' as per previous example, ensure Sarvam accepts this.
-                // Browsers might default to 'audio/webm;codecs=opus' or similar.
-                // If conversion is needed, it's a more complex client-side task.
                 const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
-                audioChunks = []; // Clear for next recording
+                audioChunks = [];
 
                 const formData = new FormData();
-                formData.append('file', audioBlob, 'user_audio.wav'); // Key 'file' from your Python example
-                formData.append('model', 'saarika:v2.5');          // Model from your Python example
-                formData.append('language_code', 'en-IN');         // Language from your Python example
+                formData.append('file', audioBlob, 'user_audio.wav');
+                formData.append('model', 'saarika:v2.5');
+                formData.append('language_code', 'en-IN');
 
                 console.log("Sending audio to Sarvam STT...");
 
@@ -99,26 +156,24 @@ export const sarvamStartListening = ({
                     const response = await fetch(SARVAM_STT_ENDPOINT_URL, {
                         method: 'POST',
                         headers: {
-                            'api-subscription-key': SARVAM_API_KEY // Use the correct header
+                            'api-subscription-key': SARVAM_API_KEY
                         },
                         body: formData,
                     });
                     const data = await response.json();
-                    // Use the transcript field from Sarvam's response
                     const transcript = data.transcript || "";
                     onFinalResult?.(transcript);
                 } catch (err) {
                     onError?.({ message: `Sarvam STT Error: ${err.message}` });
                 } finally {
-                    onListeningStateChange?.(false); // Reset to fully stopped
+                    onListeningStateChange?.(false);
                 }
             };
 
-            mediaRecorder.start(); // Start recording
+            mediaRecorder.start(250); // 250ms timeslice for more frequent ondataavailable
             onListeningStateChange?.(true, "listening");
-            hasReceivedDataInTurn = false; // Reset for this new listening session
+            hasReceivedDataInTurn = false;
 
-            // Set the initial timeout for the user to start speaking
             clearTimeout(silenceTimer);
             silenceTimer = setTimeout(() => {
                 if (!hasReceivedDataInTurn && mediaRecorder && mediaRecorder.state === "recording") {
@@ -136,123 +191,149 @@ export const sarvamStartListening = ({
 };
 
 export const sarvamStopListening = () => {
-    clearTimeout(silenceTimer); // Important to clear timer on manual stop
+    clearTimeout(silenceTimer);
     if (mediaRecorder && mediaRecorder.state === "recording") {
-        mediaRecorder.stop(); // This will trigger onstop and process the audio
+        mediaRecorder.stop();
     } else if (mediaRecorder && mediaRecorder.state === "inactive" && audioChunks.length > 0) {
-        // This case might happen if stop was called, then stop again before processing finished.
-        // Generally, onstop should handle it.
         console.warn("sarvamStopListening called but recorder not active, audio might have been processed or lost.");
     }
-    // Note: onListeningStateChange will be called from onstop
 };
 
-// --- TTS Related ---
-let currentAudioElement = null; // To manage playback
-
 export const sarvamSpeakText = async ({ text, onStart, onEnd, onError }) => {
+    // Clean up any existing audio playback
     if (currentAudioElement) {
-        currentAudioElement.pause();
-        currentAudioElement.onended = null;
-        currentAudioElement.onerror = null;
-        if (currentAudioElement.src && currentAudioElement.src.startsWith('blob:')) {
-            URL.revokeObjectURL(currentAudioElement.src);
+        if (currentAudioElement instanceof AudioBufferSourceNode) {
+            currentAudioElement.stop();
+            currentAudioElement = null;
+        } else if (currentAudioElement instanceof HTMLAudioElement) {
+            currentAudioElement.pause();
+            if (currentAudioElement.src && currentAudioElement.src.startsWith('blob:')) {
+                URL.revokeObjectURL(currentAudioElement.src);
+            }
+            currentAudioElement = null;
         }
-        currentAudioElement = null;
     }
     onStart?.();
-    console.log("Requesting audio from Sarvam TTS for:", text);
+    console.log("Requesting audio from Sarvam TTS for text:", text);
 
     try {
-        const response = await fetch(SARVAM_TTS_ENDPOINT_URL, {
-            method: "POST",
-            headers: {
-                "api-subscription-key": SARVAM_API_KEY,
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-                text: text,
-                target_language_code: "en-IN",
-                speaker:"vidya"
-            }),
-        });
-        const data = await response.json();
-        console.log("Sarvam TTS API Response:", data); // Log the full response for debugging
+        // Split the text into chunks
+        const chunks = splitText(text);
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const audioBuffers = [];
 
-        if (!response.ok) {
-            const serverError = data.detail || data.error || JSON.stringify(data);
-            throw new Error(`API returned status ${response.status}: ${serverError}`);
+        // Process each chunk and get audio buffers
+        for (const [index, chunk] of chunks.entries()) {
+            try {
+                const response = await fetch(SARVAM_TTS_ENDPOINT_URL, {
+                    method: "POST",
+                    headers: {
+                        "api-subscription-key": SARVAM_API_KEY,
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({
+                        text: chunk,
+                        target_language_code: "en-IN",
+                        speaker: "vidya"
+                    }),
+                });
+                const data = await response.json();
+                console.debug(`API response for chunk ${index}:`, data);
+
+                if (!response.ok) {
+                    console.warn(`API error for chunk ${index}: ${data.detail || data.error || 'Unknown'}`);
+                    continue; // Skip this chunk
+                }
+                if (!data.audios || data.audios.length === 0) {
+                    console.warn(`No audio in response for chunk ${index}.`);
+                    continue; // Skip this chunk
+                }
+
+                // Decode base64 audio to binary
+                const base64 = data.audios[0];
+                const byteCharacters = atob(base64);
+                const byteNumbers = new Uint8Array(byteCharacters.length);
+                for (let i = 0; i < byteCharacters.length; i++) {
+                    byteNumbers[i] = byteCharacters.charCodeAt(i);
+                }
+                const audioData = byteNumbers.buffer;
+
+                // Decode audio data to AudioBuffer
+                const buffer = await audioContext.decodeAudioData(audioData);
+                console.debug(`Audio buffer for chunk ${index}: channels=${buffer.numberOfChannels}, sampleRate=${buffer.sampleRate}, length=${buffer.length}`);
+                audioBuffers.push(buffer);
+            } catch (err) {
+                console.warn(`Error processing chunk ${index}: ${err.message}`);
+                continue; // Skip this chunk
+            }
         }
 
-        // Check for the 'audios' key and take the first element
-        if (data.audios && data.audios.length > 0) {
-            // data.audios[0] is the base64 string
-            const base64 = data.audios[0];
-            const byteCharacters = atob(base64);
-            const byteNumbers = new Array(byteCharacters.length);
-            for (let i = 0; i < byteCharacters.length; i++) {
-                byteNumbers[i] = byteCharacters.charCodeAt(i);
-            }
-            const byteArray = new Uint8Array(byteNumbers);
-            const audioBlob = new Blob([byteArray], { type: 'audio/wav' });
-            const audioUrl = URL.createObjectURL(audioBlob);
+        // Combine audio buffers into one
+        if (audioBuffers.length > 0) {
+            const numberOfChannels = audioBuffers[0].numberOfChannels;
+            const sampleRate = audioBuffers[0].sampleRate;
 
-            currentAudioElement = new Audio(audioUrl);
-        } else if (data.audio_url) {
-            // fallback for old API
-            currentAudioElement = new Audio(data.audio_url);
+            // Verify all buffers have the same properties
+            const allConsistent = audioBuffers.every(buffer => 
+                buffer.numberOfChannels === numberOfChannels && buffer.sampleRate === sampleRate
+            );
+            if (!allConsistent) {
+                throw new Error("Audio buffers have inconsistent channels or sample rates.");
+            }
+
+            let totalLength = 0;
+            audioBuffers.forEach(buffer => totalLength += buffer.length);
+
+            const combinedBuffer = audioContext.createBuffer(numberOfChannels, totalLength, sampleRate);
+            let offset = 0;
+            audioBuffers.forEach(buffer => {
+                for (let channel = 0; channel < numberOfChannels; channel++) {
+                    const channelData = combinedBuffer.getChannelData(channel);
+                    channelData.set(buffer.getChannelData(channel), offset);
+                }
+                offset += buffer.length;
+            });
+
+            // Play the combined audio
+            const source = audioContext.createBufferSource();
+            source.buffer = combinedBuffer;
+            source.connect(audioContext.destination);
+            source.onended = () => {
+                console.debug("Audio playback completed.");
+                onEnd?.();
+                currentAudioElement = null;
+            };
+            source.start();
+            currentAudioElement = source;
         } else {
-            throw new Error("No audio or audio_url in successful Sarvam TTS response.");
+            throw new Error("No valid audio buffers received.");
         }
-
-        currentAudioElement.onended = () => {
-            onEnd?.();
-            if (currentAudioElement.src && currentAudioElement.src.startsWith('blob:')) {
-                URL.revokeObjectURL(currentAudioElement.src);
-            }
-            currentAudioElement = null;
-        };
-        currentAudioElement.onerror = (errEvent) => {
-            console.error("Error playing Sarvam TTS audio:", currentAudioElement?.error || errEvent);
-            onError?.({ message: `Audio playback error: ${currentAudioElement?.error?.message || 'Unknown'}` });
-            if (currentAudioElement.src && currentAudioElement.src.startsWith('blob:')) {
-                URL.revokeObjectURL(currentAudioElement.src);
-            }
-            currentAudioElement = null;
-            onEnd?.();
-        };
-        currentAudioElement.play().catch(playError => {
-            console.error("Sarvam TTS play() rejected:", playError);
-            onError?.({ message: `Audio playback failed: ${playError.message}` });
-            if (currentAudioElement.src && currentAudioElement.src.startsWith('blob:')) {
-                URL.revokeObjectURL(currentAudioElement.src);
-            }
-            currentAudioElement = null;
-            onEnd?.();
-        });
-
     } catch (err) {
-        const errorDetail = err.message;
-        console.error("Sarvam TTS API Error:", errorDetail);
-        // Pass the cleaner error message up to the UI component
-        onError?.({ message: errorDetail });
+        console.error("Sarvam TTS Error:", err);
+        onError?.({ message: err.message });
         onEnd?.();
     }
 };
 
 export const sarvamCancelSpeech = () => {
     if (currentAudioElement) {
-        currentAudioElement.pause();
-        // Manually trigger the onended logic if it exists, to ensure cleanup and state update
-        if (typeof currentAudioElement.onended === 'function') {
-            currentAudioElement.onended(); // This will call the onEnd callback provided to sarvamSpeakText
-        } else {
-            // Fallback if onended isn't set or already cleared
-            if (currentAudioElement.src && currentAudioElement.src.startsWith('blob:')) {
-                URL.revokeObjectURL(currentAudioElement.src);
+        if (currentAudioElement instanceof AudioBufferSourceNode) {
+            currentAudioElement.stop();
+            if (typeof currentAudioElement.onended === 'function') {
+                currentAudioElement.onended();
             }
+            currentAudioElement = null;
+        } else if (currentAudioElement instanceof HTMLAudioElement) {
+            currentAudioElement.pause();
+            if (typeof currentAudioElement.onended === 'function') {
+                currentAudioElement.onended();
+            } else {
+                if (currentAudioElement.src && currentAudioElement.src.startsWith('blob:')) {
+                    URL.revokeObjectURL(currentAudioElement.src);
+                }
+            }
+            currentAudioElement = null;
         }
-        currentAudioElement = null;
         console.log("Sarvam speech cancelled by user.");
     }
 };

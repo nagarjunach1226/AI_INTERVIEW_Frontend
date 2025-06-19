@@ -19,8 +19,8 @@ const AiAvatar = "https://lh3.googleusercontent.com/aida-public/AB6AXuAaSAcOYhw6
 
 // Configuration for STT timeouts
 const STT_CONFIG_OPTIONS = {
-    initialSpeechTimeout: 7000, // 7 seconds for user to start speaking
-    userTurnSilenceDelay: 5000, // 5 seconds of silence during user's turn
+    initialSpeechTimeout: 10000, // 10 seconds for user to start speaking
+    userTurnSilenceDelay: 10000, // 10 seconds of silence during user's turn
 };
 
 export default function InterviewPage() {
@@ -227,7 +227,7 @@ export default function InterviewPage() {
         if (isBackendLoading) return { text: "Processing...", disabled: true, showMic: false };
         if (listeningState === "transcribing") return { text: "Transcribing...", disabled: true, showMic: false };
         if (listeningState === "listening") return { text: "Stop Listening", disabled: false, showMic: true };
-        return { text: "Start Listening", disabled: false, showMic: true };
+        return { text: "Start speaking", disabled: false, showMic: true };
     };
     const { text: listenButtonText, disabled: listenButtonDisabled, showMic } = getButtonTextAndState();
 
